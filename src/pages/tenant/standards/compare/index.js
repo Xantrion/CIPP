@@ -39,6 +39,7 @@ import { useDialog } from "../../../../hooks/use-dialog";
 import { Grid } from "@mui/system";
 import DOMPurify from "dompurify";
 import { ClockIcon } from "@heroicons/react/24/outline";
+import ReactMarkdown from "react-markdown";
 
 const Page = () => {
   const router = useRouter();
@@ -181,7 +182,12 @@ const Page = () => {
               // The standard should be reportable if there's an action with value === 'Report'
               const actions = standardConfig?.action ?? [];
               const reportingEnabled =
-                actions.filter((action) => action?.value === "Report").length > 0;
+                //if actions contains Report or Remediate, case insensitive, then we good.
+                actions.filter(
+                  (action) =>
+                    action?.value.toLowerCase() === "report" ||
+                    action?.value.toLowerCase() === "remediate"
+                ).length > 0;
 
               // Find the tenant's value for this standard
               const currentTenantStandard = currentTenantData.find(
@@ -309,10 +315,17 @@ const Page = () => {
       const categoryMatchesSearch = !searchQuery || category.toLowerCase().includes(searchLower);
 
       const filteredStandards = groupedStandards[category].filter((standard) => {
+        const tenantValue = standard.currentTenantValue?.Value || standard.currentTenantValue;
+        const hasLicenseMissing = typeof tenantValue === "string" && tenantValue.startsWith("License Missing:");
+        
         const matchesFilter =
           filter === "all" ||
           (filter === "compliant" && standard.complianceStatus === "Compliant") ||
-          (filter === "nonCompliant" && standard.complianceStatus === "Non-Compliant");
+          (filter === "nonCompliant" && standard.complianceStatus === "Non-Compliant") ||
+          (filter === "nonCompliantWithLicense" &&
+           standard.complianceStatus === "Non-Compliant" && !hasLicenseMissing) ||
+          (filter === "nonCompliantWithoutLicense" &&
+           standard.complianceStatus === "Non-Compliant" && hasLicenseMissing);
 
         const matchesSearch =
           !searchQuery ||
@@ -339,10 +352,38 @@ const Page = () => {
   const reportingDisabledCount =
     comparisonData?.filter((standard) => standard.complianceStatus === "Reporting Disabled")
       .length || 0;
+  
+  // Calculate license-related metrics
+  const missingLicenseCount = comparisonData?.filter((standard) => {
+    const tenantValue = standard.currentTenantValue?.Value || standard.currentTenantValue;
+    return typeof tenantValue === "string" && tenantValue.startsWith("License Missing:");
+  }).length || 0;
+  
+  const nonCompliantWithLicenseCount = comparisonData?.filter((standard) => {
+    const tenantValue = standard.currentTenantValue?.Value || standard.currentTenantValue;
+    return standard.complianceStatus === "Non-Compliant" &&
+           !(typeof tenantValue === "string" && tenantValue.startsWith("License Missing:"));
+  }).length || 0;
+  
+  const nonCompliantWithoutLicenseCount = comparisonData?.filter((standard) => {
+    const tenantValue = standard.currentTenantValue?.Value || standard.currentTenantValue;
+    return standard.complianceStatus === "Non-Compliant" &&
+           (typeof tenantValue === "string" && tenantValue.startsWith("License Missing:"));
+  }).length || 0;
+  
   const compliancePercentage =
     allCount > 0
       ? Math.round((compliantCount / (allCount - reportingDisabledCount || 1)) * 100)
       : 0;
+      
+  const missingLicensePercentage =
+    allCount > 0
+      ? Math.round((missingLicenseCount / (allCount - reportingDisabledCount || 1)) * 100)
+      : 0;
+      
+  // Combined score: compliance percentage + missing license percentage
+  // This represents the total "addressable" compliance (compliant + could be compliant if licensed)
+  const combinedScore = compliancePercentage + missingLicensePercentage;
 
   return (
     <Box sx={{ flexGrow: 1, py: 4 }}>
@@ -378,7 +419,7 @@ const Page = () => {
             {comparisonApi.data?.find(
               (comparison) => comparison.tenantFilter === currentTenant
             ) && (
-              <Stack alignItems="center" direction="row" spacing={1}>
+              <Stack alignItems="center" direction="row" spacing={1} flexWrap="wrap">
                 <Chip
                   icon={
                     <SvgIcon fontSize="small">
@@ -396,6 +437,30 @@ const Page = () => {
                       : "error"
                   }
                   sx={{ ml: 2 }}
+                />
+                <Chip
+                  label={`${missingLicensePercentage}% Missing Required License`}
+                  variant="outlined"
+                  size="small"
+                  color={
+                    missingLicensePercentage === 0
+                      ? "success"
+                      : missingLicensePercentage <= 25
+                      ? "warning"
+                      : "error"
+                  }
+                />
+                <Chip
+                  label={`${combinedScore}% Combined Score`}
+                  variant="outlined"
+                  size="small"
+                  color={
+                    combinedScore >= 80
+                      ? "success"
+                      : combinedScore >= 60
+                      ? "warning"
+                      : "error"
+                  }
                 />
               </Stack>
             )}
@@ -428,7 +493,7 @@ const Page = () => {
           <>
             {[1, 2, 3].map((item) => (
               <Grid container spacing={3} key={item} sx={{ mb: 4 }}>
-                <Grid item size={12}>
+                <Grid size={12}>
                   <Stack
                     direction="row"
                     justifyContent="space-between"
@@ -443,7 +508,7 @@ const Page = () => {
                   </Stack>
                 </Grid>
 
-                <Grid item size={{ xs: 12, md: 6 }}>
+                <Grid size={{ xs: 12, md: 6 }}>
                   <Card sx={{ height: "100%" }}>
                     <Stack
                       direction="row"
@@ -472,7 +537,7 @@ const Page = () => {
                   </Card>
                 </Grid>
 
-                <Grid item size={{ xs: 12, md: 6 }}>
+                <Grid size={{ xs: 12, md: 6 }}>
                   <Card sx={{ height: "100%" }}>
                     <Stack
                       direction="row"
@@ -569,6 +634,18 @@ const Page = () => {
                 >
                   Non-Compliant ({nonCompliantCount})
                 </Button>
+                <Button
+                  variant={filter === "nonCompliantWithLicense" ? "contained" : "outlined"}
+                  onClick={() => setFilter("nonCompliantWithLicense")}
+                >
+                  Non-Compliant (License available) ({nonCompliantWithLicenseCount})
+                </Button>
+                <Button
+                  variant={filter === "nonCompliantWithoutLicense" ? "contained" : "outlined"}
+                  onClick={() => setFilter("nonCompliantWithoutLicense")}
+                >
+                  Non-Compliant (License not available) ({nonCompliantWithoutLicenseCount})
+                </Button>
               </ButtonGroup>
             </Stack>
             {comparisonApi.isError && (
@@ -641,7 +718,7 @@ const Page = () => {
 
                 {filteredGroupedStandards[category].map((standard, index) => (
                   <Grid container spacing={3} key={index} sx={{ mb: 4 }}>
-                    <Grid item size={{ xs: 12, md: 6 }}>
+                    <Grid size={{ xs: 12, md: 6 }}>
                       <Card sx={{ height: "100%", borderRadius: 2, boxShadow: 2 }}>
                         <Stack
                           direction="row"
@@ -784,7 +861,7 @@ const Page = () => {
                       </Card>
                     </Grid>
 
-                    <Grid item size={{ xs: 12, md: 6 }}>
+                    <Grid size={{ xs: 12, md: 6 }}>
                       <Card sx={{ height: "100%", borderRadius: 2, boxShadow: 2 }}>
                         <Stack
                           direction="row"
@@ -1020,7 +1097,7 @@ const Page = () => {
                     </Grid>
 
                     {standard.complianceDetails && (
-                      <Grid item size={12}>
+                      <Grid size={12}>
                         <Card sx={{ borderRadius: 2, boxShadow: 1 }}>
                           <Stack direction="row" alignItems="flex-start" spacing={2} sx={{ p: 3 }}>
                             <Box
@@ -1033,7 +1110,44 @@ const Page = () => {
                             >
                               <Info />
                             </Box>
-                            <Typography variant="body2">{standard.complianceDetails}</Typography>
+                            <Box
+                              sx={{
+                                // Style markdown links to match CIPP theme
+                                "& a": {
+                                  color: (theme) => theme.palette.primary.main,
+                                  textDecoration: "underline",
+                                  "&:hover": {
+                                    textDecoration: "none",
+                                  },
+                                },
+                                fontSize: "0.875rem", 
+                                lineHeight: 1.43,     
+                                "& p": {
+                                  my: 0,
+                                },
+                                flex: 1,
+                              }}
+                            >
+                              <ReactMarkdown
+                                components={{
+                                  // Make links open in new tab with security attributes
+                                  a: ({ href, children, ...props }) => (
+                                    <a
+                                      href={href}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      {...props}
+                                    >
+                                      {children}
+                                    </a>
+                                  ),
+                                  // Convert paragraphs to spans to avoid unwanted spacing
+                                  p: ({ children }) => <span>{children}</span>,
+                                }}
+                              >
+                                {standard.complianceDetails}
+                              </ReactMarkdown>
+                            </Box>
                           </Stack>
                         </Card>
                       </Grid>
